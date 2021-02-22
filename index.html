@@ -79,7 +79,697 @@
         <textarea id="paste-field"></textarea>
     </div>
 </div>
-<script type="text/javascript" src="ue4lib.js"></script>
+<script type="text/javascript" src="./src/ue4lib.js">var UE4Lib;
+(function (UE4Lib) {
+    'use strict';
+    var Node = /** @class */ (function () {
+        function Node(data) {
+            var _this = this;
+            this._pins = [];
+            this._data = data;
+            //filter pins
+            var attributes = Object.keys(this._data);
+            attributes.forEach(function (attr) {
+                if (attr.indexOf('EdGraphPin_') !== -1) {
+                    _this._pins.push(new Pin(_this._data[attr]));
+                }
+            });
+        }
+        Node.prototype.getPosition = function () {
+            return {
+                x: this.getProperty('NodePosX') || 0,
+                y: this.getProperty('NodePosY') || 0
+            };
+        };
+        Node.prototype.getSize = function () {
+            var width = this.getProperty('NodeWidth') || 0;
+            var height = this.getProperty('NodeHeight') || 0;
+            return {
+                width: width,
+                height: height
+            };
+        };
+        Node.prototype.getProperty = function (name) {
+            if (name in this._data)
+                return this._data[name];
+            return null;
+        };
+        Node.prototype.getName = function () {
+            return this.getProperty('Name');
+        };
+        Node.prototype.getClass = function () {
+            return this.getProperty('Class');
+        };
+        Node.prototype.hasPin = function (pinName) {
+            return this._pins.some(function (pin) {
+                return pin.getName() === pinName ? true : false;
+            });
+        };
+        Node.prototype.getCommentColor = function () {
+            var TitleBarColorMultiplier = 0.6;
+            var color = this.getProperty('CommentColor');
+            if (color !== null) {
+                return [
+                    Math.floor(color.R * 255 * TitleBarColorMultiplier),
+                    Math.floor(color.G * 255 * TitleBarColorMultiplier),
+                    Math.floor(color.B * 255 * TitleBarColorMultiplier),
+                    Math.floor(color.A * 255 * TitleBarColorMultiplier) //A
+                ];
+            }
+            else if (this.getClass() === 'EdGraphNode_Comment') {
+                //white
+                return [
+                    Math.floor(255 * TitleBarColorMultiplier),
+                    Math.floor(255 * TitleBarColorMultiplier),
+                    Math.floor(255 * TitleBarColorMultiplier),
+                    Math.floor(255 * TitleBarColorMultiplier) //A
+                ];
+            }
+            return null;
+        };
+        Node.prototype.getCommentColorAsCSS = function () {
+            var color = this.getCommentColor();
+            if (color === null)
+                return;
+            return 'rgba(' + color.join(',') + ')';
+        };
+        return Node;
+    }());
+    UE4Lib.Node = Node;
+    var Pin = /** @class */ (function () {
+        function Pin(parsedPin) {
+            var _this = this;
+            this._connectedTo = [];
+            var keys = Object.keys(parsedPin);
+            keys.forEach(function (key) {
+                if (key.indexOf('LinkedTo(') !== -1)
+                    _this._connectedTo.push(parsedPin[key]);
+            });
+            this._data = parsedPin;
+        }
+        Pin.prototype.getProperty = function (property) {
+            if (property in this._data)
+                return this._data[property];
+            return false;
+        };
+        Pin.prototype.getName = function () {
+            return this.getProperty('Name');
+        };
+        Pin.prototype.isInput = function () {
+            return !this.isOutput();
+        };
+        Pin.prototype.isOutput = function () {
+            var direction = this.getProperty('Direction');
+            if (direction !== false && direction === 'EGPD_Output')
+                return true;
+            return false;
+        };
+        Pin.prototype.isHidden = function () {
+            var hidden = this.getProperty('bHidden');
+            if (hidden !== false && hidden === 'True')
+                return true;
+            return false;
+        };
+        Pin.prototype.isConnected = function () {
+            return this._connectedTo.length > 0 ? true : false;
+        };
+        Pin.prototype.getConnections = function () {
+            return this._connectedTo;
+        };
+        return Pin;
+    }());
+    var BlueprintConfig = /** @class */ (function () {
+        function BlueprintConfig() {
+            //offset from origin
+            this.offset = {
+                x: 0,
+                y: 0
+            };
+            //size of the blueprint
+            this.size = {
+                width: 0,
+                height: 0
+            };
+            //safe area to add, so the outer nodes don't stick right to the edge
+            //padding widt = 256 -> padding of 128 on left & right side = 1 grid padding on each side
+            this.padding = {
+                width: 256,
+                height: 256
+            };
+        }
+        return BlueprintConfig;
+    }());
+    var Blueprint = /** @class */ (function () {
+        function Blueprint(parsedBP) {
+            var _this = this;
+            this._config = new BlueprintConfig();
+            this._data = [];
+            parsedBP.forEach(function (node) {
+                _this._data.push(new Node(node));
+            });
+            this._config.size = this.calculateSize();
+            console.group('size');
+            console.dir(this._config.size);
+            console.groupEnd();
+            console.group('offset');
+            console.dir(this._config.offset);
+            console.groupEnd();
+        }
+        Blueprint.prototype.calculateSize = function () {
+            var size = this._data[0].getSize();
+            var position = this._data[0].getPosition();
+            var min_X = position.x;
+            var min_Y = position.y;
+            var max_X = position.x + size.width;
+            var max_Y = position.y + size.height;
+            this._data.forEach(function (node) {
+                var pos = node.getPosition();
+                var size = node.getSize();
+                if (pos.x < min_X) {
+                    min_X = pos.x;
+                }
+                if (pos.x + size.width > max_X) {
+                    max_X = pos.x + size.width;
+                }
+                if (pos.y < min_Y) {
+                    min_Y = pos.y;
+                }
+                if (pos.y + size.height > max_Y) {
+                    max_Y = pos.y + size.height;
+                }
+            });
+            //round offset to be power of 128(full grid)
+            this._config.offset.x = (min_X % 128 !== 0) ? this._config.offset.x = Math.ceil(min_X / 128) * 128 : min_X;
+            this._config.offset.y = (min_Y % 128 !== 0) ? this._config.offset.y = Math.ceil(min_Y / 128) * 128 : min_Y;
+            //add padding offset
+            this._config.offset.x -= Math.floor(this._config.padding.width / 2);
+            this._config.offset.y -= Math.floor(this._config.padding.height / 2);
+            return {
+                width: Math.sqrt(Math.pow(min_X - max_X, 2)) + this._config.padding.width,
+                height: Math.sqrt(Math.pow(min_Y - max_Y, 2)) + this._config.padding.height
+            };
+        };
+        Blueprint.prototype.getSize = function () {
+            if (this._config.size.width === -1 && this._config.size.height === -1)
+                return this.calculateSize();
+            return this._config.size;
+        };
+        Blueprint.prototype.getOffset = function () {
+            if (this._config.size.width === -1 && this._config.size.height === -1)
+                this.calculateSize();
+            return this._config.offset;
+        };
+        Blueprint.prototype.setPadding = function (width, height) {
+            this._config.padding = {
+                width: Math.abs(width),
+                height: Math.abs(height)
+            };
+        };
+        Blueprint.prototype.getPadding = function () {
+            return this._config.padding;
+        };
+        Blueprint.prototype.getNodeByName = function (name) {
+            var match = null;
+            this._data.forEach(function (node) {
+                if (node.getName() === name)
+                    match = node;
+            });
+            return match;
+        };
+        Blueprint.prototype.getNodesByNames = function (names) {
+            var _this = this;
+            var matches = [];
+            names.forEach(function (name) {
+                var match = _this.getNodeByName(name);
+                if (match !== null) {
+                    matches.push(match);
+                }
+            });
+            return matches.length > 0 ? matches : null;
+        };
+        Blueprint.prototype.getNodesByClass = function (classType) {
+            var nodes;
+            nodes = this._data.filter(function (node) {
+                return (node.getClass() === classType) ? true : false;
+            });
+            return nodes;
+        };
+        Blueprint.prototype.getNodesByProperty = function (property) {
+            var filteredNodes = [];
+            this._data.forEach(function (node) {
+                if (node.getProperty(property) !== null)
+                    filteredNodes.push(node);
+            });
+            return filteredNodes;
+        };
+        Blueprint.prototype.getNodeByPin = function (pinName) {
+            var match = null;
+            var found = this._data.some(function (node) {
+                if (node.hasPin(pinName)) {
+                    match = node;
+                    return true;
+                }
+                return false;
+            });
+            return (found !== false) ? match : null;
+        };
+        Blueprint.prototype.getNodes = function () {
+            return this._data;
+        };
+        return Blueprint;
+    }());
+    UE4Lib.Blueprint = Blueprint;
+})(UE4Lib || (UE4Lib = {}));
+/// <reference path="Blueprint.ts" />
+var UE4Lib;
+(function (UE4Lib) {
+    'use strict';
+    //Utility functions for line parsing
+    var LineParser = /** @class */ (function () {
+        function LineParser(line) {
+            this.kv = {}; //key value object
+            this.set(line);
+        }
+        LineParser.prototype.get = function () {
+            return this.line.substr(0);
+        };
+        LineParser.prototype.set = function (newLine) {
+            this.line = newLine;
+            this.parsed = false;
+            this.kv = {};
+            return this;
+        };
+        LineParser.prototype.getIndentation = function () {
+            var spaces;
+            var trimmedLine = this.line.trim();
+            spaces = this.line.indexOf(trimmedLine);
+            if (spaces > 0) {
+                try {
+                    if (spaces % 3 !== 0) {
+                        throw 'malformed indentation level-> ' + spaces + ' spaces:' + this.line;
+                    }
+                }
+                catch (e) {
+                    console.error(e);
+                }
+                return Math.floor(spaces / 3);
+            }
+            return 0;
+        };
+        LineParser.prototype.getKeyValues = function () {
+            var _this = this;
+            var tokens = this.line.trim().split(' ');
+            var values = {};
+            if (this.isMultiStringToken(this.line)) {
+                tokens = [this.line.trim()];
+            }
+            else {
+                //filter key value pairs
+                tokens = tokens.filter(function (token) {
+                    if (token.indexOf('=') !== -1)
+                        return true;
+                    return false;
+                });
+            }
+            //extract key value pairs
+            tokens.forEach(function (token) {
+                var split = token.indexOf('=');
+                var key = token.substr(0, split).trim();
+                var value = token.substr(split + 1).trim();
+                //todo don't leave values as strings
+                values[key] = _this.parseToken(value);
+            });
+            this.kv = values;
+            return values;
+        };
+        LineParser.prototype.getValueFor = function (key) {
+            if (!this.parsed)
+                this.getKeyValues();
+            return this.kv[key];
+        };
+        LineParser.prototype.containsKey = function (key) {
+            if (!this.parsed)
+                this.getKeyValues();
+            return key in this.kv;
+        };
+        LineParser.prototype.parseToken = function (token) {
+            var _this = this;
+            if (this.isStringToken(token)) {
+                token = token.substr(1, token.length - 2);
+            }
+            else if (this.isMultiToken(token)) {
+                token = token.substr(1, token.length - 2);
+                var tokens = token.split(',');
+                var values = {};
+                tokens.forEach(function (token) {
+                    var split = token.indexOf('=');
+                    var key = token.substr(0, split).trim();
+                    var value = token.substr(split + 1).trim();
+                    values[key] = _this.parseToken(value);
+                });
+                return values;
+            }
+            var floatToken = parseFloat(token);
+            if (!isNaN(floatToken))
+                return floatToken;
+            return token;
+        };
+        LineParser.prototype.isClassStartTag = function () {
+            return this.line.indexOf('Begin Object') != -1 && this.containsKey('Class') && this.containsKey('Name');
+        };
+        LineParser.prototype.isClassEndTag = function () {
+            return this.line.indexOf('End Object') != -1;
+        };
+        LineParser.prototype.isStringToken = function (token) {
+            return token[0] === '"' && token[token.length - 1] === '"';
+        };
+        LineParser.prototype.isMultiStringToken = function (token) {
+            var keys = [
+                'NodeComment=',
+                'ErrorMsg=',
+                'PinToolTip='
+            ];
+            return keys.some(function (key) {
+                return token.trim().indexOf(key) === 0;
+            });
+        };
+        LineParser.prototype.isMultiToken = function (token) {
+            return token[0] === '(' && token[token.length - 1] === ')';
+        };
+        LineParser.prototype.isObjectStartBlock = function () {
+            return this.isClassStartTag() === false && this.containsKey('Name');
+        };
+        LineParser.prototype.isObjectEndBlock = function () {
+            return this.isClassEndTag();
+        };
+        return LineParser;
+    }());
+    var Parser = /** @class */ (function () {
+        function Parser(blueprint) {
+            this.blueprint = [];
+            this.lineParser = new LineParser("");
+            this.currentLine = 0;
+            this.malformed = false;
+            this.load(blueprint);
+        }
+        Parser.prototype.reset = function () {
+            this.currentLine = 0;
+            this.lineParser.set(this.blueprint[this.currentLine]);
+        };
+        Parser.prototype.load = function (blueprint) {
+            this.reset();
+            this.blueprint = blueprint.split('\n');
+            this.lineParser.set(this.blueprint[this.currentLine]);
+        };
+        Parser.prototype.line = function () {
+            return this.lineParser;
+        };
+        Parser.prototype.isEOF = function () {
+            return this.currentLine >= this.blueprint.length;
+        };
+        Parser.prototype.isMalformed = function () {
+            return this.malformed;
+        };
+        Parser.prototype.next = function () {
+            this.currentLine++;
+            if (this.currentLine < this.blueprint.length) {
+                this.lineParser.set(this.blueprint[this.currentLine]);
+            }
+        };
+        Parser.prototype.parseBlock = function () {
+            var blockLevel = this.line().getIndentation();
+            var node = {};
+            var name;
+            var _class;
+            this.next();
+            //console.warn(this.line().getValueFor('Name'));
+            //loop through the block
+            while (!this.line().isClassEndTag() && this.line().getIndentation() !== blockLevel && !this.isEOF()) {
+                //check for class start tag in block e.g. nodes
+                if (this.line().isClassStartTag() && this.line().getIndentation() === blockLevel + 1) {
+                    name = this.line().getValueFor('Name');
+                    _class = this.line().getValueFor('Class');
+                    node[name] = this.parseBlock();
+                    node[name].Name = name;
+                    node[name].Class = _class;
+                }
+                //check for object start tag in block e.g. pin definitions
+                else if (this.line().isObjectStartBlock() && this.line().getIndentation() === blockLevel + 1) {
+                    name = this.line().getValueFor('Name');
+                    if (name in node) {
+                        //append properties
+                        var append = this.parseBlock();
+                        Object.keys(append).forEach(function (key) {
+                            node[name][key] = append[key];
+                        });
+                    }
+                    else {
+                        node[name] = this.parseBlock();
+                    }
+                }
+                //check for values in the block level
+                else if (this.line().getIndentation() === blockLevel + 1) {
+                    var values = this.line().getKeyValues();
+                    var keys = Object.keys(values);
+                    keys.forEach(function (key) {
+                        node[key] = values[key];
+                    });
+                }
+                this.next();
+            }
+            //each block should end with 'End Object' on the same block level
+            if (!this.line().isObjectEndBlock() && this.line().getIndentation() !== blockLevel) {
+                this.malformed = true;
+            }
+            return node;
+        };
+        Parser.prototype.getBlueprint = function (parsedBP) {
+            //todo
+            return new UE4Lib.Blueprint(parsedBP);
+        };
+        return Parser;
+    }());
+    UE4Lib.Parser = Parser;
+})(UE4Lib || (UE4Lib = {}));
+/// <reference path="Blueprint.ts" />
+var UE4Lib;
+(function (UE4Lib) {
+    'use strict';
+    //SetColorAndOpacity
+    var gridSize = 16;
+    var BRANDING_TEXT = 'BLUEPRINT VIEWER';
+    var GridColor = /** @class */ (function () {
+        function GridColor() {
+        }
+        GridColor.background = '#2A2A2A';
+        GridColor.primaryLine = '#353535';
+        GridColor.secondaryLine = '#1C1C1C';
+        GridColor.axis = '#000000';
+        return GridColor;
+    }());
+    UE4Lib.GridColor = GridColor;
+    function drawGridLine(params) {
+        var ctx = params.ctx;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(params.fromX, params.fromY);
+        ctx.lineTo(params.toX, params.toY);
+        ctx.strokeStyle = params.color;
+        ctx.stroke();
+    }
+    function drawGrid(container, blueprint) {
+        var size = blueprint.getSize();
+        var offset = blueprint.getOffset();
+        console.log(blueprint.getSize());
+        var canvas = container.getElementsByClassName('grid')[0];
+        var ctx = canvas.getContext('2d');
+        canvas.width = size.width;
+        canvas.height = size.height;
+        canvas.style.width = size.width + 'px';
+        canvas.style.height = size.height + 'px';
+        ctx.globalCompositeOperation = 'normal';
+        ctx.fillStyle = GridColor.background;
+        ctx.translate(0.5, 0.5); //for dat extra crisp grid
+        //draw small grid
+        for (var i = 1; i < canvas.width; i++) {
+            if (i % gridSize === 0) {
+                drawGridLine({
+                    ctx: ctx,
+                    color: GridColor.primaryLine,
+                    fromX: i,
+                    fromY: 0,
+                    toX: i,
+                    toY: canvas.height
+                });
+            }
+        }
+        for (var i = 1; i < canvas.height; i++) {
+            if (i % gridSize === 0) {
+                drawGridLine({
+                    ctx: ctx,
+                    color: GridColor.primaryLine,
+                    fromX: 0,
+                    fromY: i,
+                    toX: canvas.width,
+                    toY: i
+                });
+            }
+        }
+        //draw big grid
+        for (var i = 1; i < canvas.width; i++) {
+            if (i % (gridSize * 8) === 0) {
+                drawGridLine({
+                    ctx: ctx,
+                    color: GridColor.secondaryLine,
+                    fromX: i,
+                    fromY: 0,
+                    toX: i,
+                    toY: canvas.height
+                });
+            }
+        }
+        for (var i = 1; i < canvas.height; i++) {
+            if (i % (gridSize * 8) === 0) {
+                drawGridLine({
+                    ctx: ctx,
+                    color: GridColor.secondaryLine,
+                    fromX: 0,
+                    fromY: i,
+                    toX: canvas.width,
+                    toY: i
+                });
+            }
+        }
+        //draw x axis
+        if (offset.y <= 0 && offset.y + size.height >= 0) {
+            console.warn('drawing x axis');
+            drawGridLine({
+                ctx: ctx,
+                color: GridColor.axis,
+                fromX: 0,
+                fromY: (offset.y * -1),
+                toX: canvas.width,
+                toY: (offset.y * -1)
+            });
+        }
+        //draw y axis
+        if (offset.x <= 0 && offset.x + size.width >= 0) {
+            console.warn('drawing y axis');
+            drawGridLine({
+                ctx: ctx,
+                color: GridColor.axis,
+                fromX: (offset.x * -1),
+                fromY: 0,
+                toX: (offset.x * -1),
+                toY: canvas.height
+            });
+        }
+        ctx.translate(-0.5, -0.5); //for dat extra crisp grid
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#039EE5";
+        ctx.beginPath();
+        ctx.moveTo(42, 115);
+        ctx.bezierCurveTo(221, 114, 231, 251, 400, 250);
+        ctx.stroke();
+    }
+    UE4Lib.drawGrid = drawGrid;
+    function drawNodes(container, blueprint) {
+        var nodes = blueprint.getNodes();
+        var offset = blueprint.getOffset();
+        nodes.forEach(function (node) {
+            if (node.getClass() === 'EdGraphNode_Comment') {
+                var nodeEl = createEdGraphNode_Comment(container, node);
+                nodeEl.style.transform = 'translate(' + (offset.x * -1) + 'px,' + (offset.y * -1) + 'px)';
+                container.getElementsByClassName('nodes')[0].appendChild(nodeEl);
+            }
+            else {
+                var nodeEl = createPlaceholderNode(container, node);
+                nodeEl.style.transform = 'translate(' + (offset.x * -1) + 'px,' + (offset.y * -1) + 'px)';
+                container.getElementsByClassName('nodes')[0].appendChild(nodeEl);
+            }
+        });
+    }
+    UE4Lib.drawNodes = drawNodes;
+    function createEdGraphNode_Comment(container, node) {
+        var size = node.getSize();
+        var position = node.getPosition();
+        var div = document.createElement('div');
+        div.className = node.getClass();
+        div.style.width = size.width + 'px';
+        div.style.height = size.height + 'px';
+        div.style.position = 'absolute';
+        div.style.left = position.x + 'px';
+        div.style.top = position.y + 'px';
+        div.style.backgroundColor = node.getCommentColorAsCSS();
+        return div;
+    }
+    UE4Lib.createEdGraphNode_Comment = createEdGraphNode_Comment;
+    function createPlaceholderNode(container, node) {
+        var position = node.getPosition();
+        var div = document.createElement('div');
+        div.innerHTML = node.getClass();
+        div.style.textAlign = 'center';
+        div.style.lineHeight = '128px';
+        div.className = node.getClass();
+        div.style.width = '256px';
+        div.style.height = '128px';
+        div.style.position = 'absolute';
+        div.style.left = position.x + 'px';
+        div.style.top = position.y + 'px';
+        div.style.backgroundColor = '#4B6248';
+        div.style.zIndex = '1';
+        div.style.borderRadius = '16px';
+        div.style.color = 'white';
+        return div;
+    }
+    UE4Lib.createPlaceholderNode = createPlaceholderNode;
+    function initContainer(container) {
+        var brandingEl = document.createElement('div');
+        var gridEl = document.createElement('canvas');
+        var linesEl = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        var nodesEl = document.createElement('div');
+        container.innerHTML = '';
+        container.className = 'blueprint-view';
+        gridEl.className = 'grid';
+        container.appendChild(gridEl);
+        linesEl.setAttribute('class', 'lines');
+        container.appendChild(linesEl);
+        nodesEl.className = 'nodes';
+        container.appendChild(nodesEl);
+        brandingEl.innerHTML = BRANDING_TEXT;
+        brandingEl.className = 'branding';
+        container.appendChild(brandingEl);
+    }
+    UE4Lib.initContainer = initContainer;
+})(UE4Lib || (UE4Lib = {}));
+/// <reference path="Parser.ts" />
+/// <reference path="Drawing.ts" />
+var UE4Lib;
+(function (UE4Lib) {
+    'use strict';
+    function parseBlueprint(markup) {
+        var parser = new UE4Lib.Parser(markup);
+        var nodes = [];
+        var node = {};
+        //iterate through the blueprint
+        while (!parser.isEOF()) {
+            if (parser.line().getIndentation() === 0 && parser.line().isClassStartTag()) {
+                var name = parser.line().getValueFor('Name');
+                var _class = parser.line().getValueFor('Class');
+                node = parser.parseBlock();
+                node['Name'] = name;
+                node['Class'] = _class;
+                nodes.push(node);
+            }
+            parser.next();
+        }
+        if (parser.isMalformed())
+            nodes = [];
+        return parser.getBlueprint(nodes);
+    }
+    UE4Lib.parseBlueprint = parseBlueprint;
+})(UE4Lib || (UE4Lib = {}));
+</script>
 <script type="text/javascript">
     window.onload = function(e){
         var pastefield = document.getElementById('paste-field');
